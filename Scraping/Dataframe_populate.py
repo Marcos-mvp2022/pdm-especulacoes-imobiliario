@@ -1,25 +1,21 @@
-# -*- coding: utf-8 -*-
-import logging
 import time
 import random
 import unicodedata
 import os
 import sys
 import datetime
-import json
+import logging
 import pandas as pd
-from typing import List, Optional, Dict, Any
 import cloudscraper
+
+from typing import List, Optional, Dict, Any
 from google.cloud import storage
 
 # ===================== Configuração de Logs =====================
-# Configura logging para sair no stdout (Cloud Logging captura isso automaticamente)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("zap_job_scraper")
 
-# ===================== Constantes =====================
-
-# --- Constantes do Scraper ---
+# ===================== Constantes ===============================
 ORIGIN_PAGE = "https://www.zapimoveis.com.br/"
 API_URL = "https://glue-api.zapimoveis.com.br/v4/listings"
 DEVICE_ID = "c5a40c3c-d033-4a5d-b1e2-79b59e4fb68d"
@@ -28,6 +24,7 @@ CATEGORY_PAGE = "RESULT"
 LISTING_TYPE = "USED"
 
 # --- Constantes de Comportamento ---
+
 SIZE = 30
 FROM_MAX = 300
 PRICE_MIN_START = 1000
@@ -36,12 +33,8 @@ REQUESTS_TIMEOUT = 30
 BASE_SLEEP_SECONDS = 0.9
 RANDOM_JITTER_MAX = 0.6
 RETRIES = 5
-# Em Cloud Run (headless), não podemos usar cookies de browser local
-USE_BROWSER_COOKIES = False
 
-# --- Configurações GCS ---
-# Tenta pegar do ambiente, senão usa o default
-GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "pdm-especulacoes-imobiliario")
+USE_BROWSER_COOKIES = False
 
 INCLUDE_FIELDS = (
     "expansion(search(result(listings(listing("
@@ -79,18 +72,15 @@ INCLUDE_FIELDS = (
     "bedrooms,bathrooms,parkingSpaces,pricingInfos))),totalCount))"
 )
 
-
 # ===================== Helpers =====================
 
 def _ascii_no_accents(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
 
-
 def build_address_location_id(state: str, city: str) -> str:
     st = _ascii_no_accents(state)
     ct = _ascii_no_accents(city)
     return f"BR>{st}>NULL>{ct}"
-
 
 UA_EDGE_141 = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -109,12 +99,10 @@ COMMON_HEADERS = {
     "x-domain": ".zapimoveis.com.br",
 }
 
-
 def make_scraper():
     s = cloudscraper.create_scraper()
     s.headers.update(COMMON_HEADERS)
     return s
-
 
 def bootstrap_cookies() -> Dict[str, str]:
     s = make_scraper()
@@ -128,16 +116,13 @@ def bootstrap_cookies() -> Dict[str, str]:
     logger.info(f"Cookies coletados via request inicial: {keys}")
     return cookies
 
-
 def polite_sleep():
     time.sleep(BASE_SLEEP_SECONDS + random.uniform(0, RANDOM_JITTER_MAX))
-
 
 def looks_like_html(text: str) -> bool:
     if not text: return False
     t = text.lstrip()
     return t.startswith("<") or t.lower().startswith("<!doctype")
-
 
 def extract_listings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     exp = (((payload or {}).get("expansion") or {}).get("search") or {}).get("result") or {}
@@ -145,7 +130,6 @@ def extract_listings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         return exp.get("listings") or []
     srch = ((payload or {}).get("search") or {}).get("result") or {}
     return srch.get("listings") or []
-
 
 # ===================== Core: chamada da API =====================
 
@@ -181,7 +165,6 @@ def call_api(scraper, params: Dict[str, str], tries=RETRIES):
             time.sleep(1.0 + random.uniform(0, 0.6))
     return last
 
-
 # ===================== Upload para GCS =====================
 
 def upload_df_to_gcs(df: pd.DataFrame, bucket_name: str, destination_blob_name: str, format: str = 'parquet'):
@@ -204,7 +187,6 @@ def upload_df_to_gcs(df: pd.DataFrame, bucket_name: str, destination_blob_name: 
     finally:
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
-
 
 # ===================== Pipeline Lógico =====================
 
@@ -331,22 +313,32 @@ def run_pipeline(city: str, state: str, business_type: str, price_max: int) -> (
 
 # ===================== Main (Cloud Run Job Entrypoint) =====================
 
+GCS_BUCKET_NAME = "pdm-especulacoes-imobiliario"
+
+
 def main():
     """
     Função principal executada pelo Container.
-    Lê parâmetros de Variáveis de Ambiente (injetadas pelo Cloud Scheduler).
+    Lê parâmetros de Variáveis de Ambiente (injetadas pelo Cloud Scheduler/Manual Job).
     """
     logger.info("--- Iniciando Job Cloud Run ---")
 
     # 1. Leitura de Parâmetros
+    # (Recomendado usar Variáveis de Ambiente para os parâmetros de execução)
     city = os.environ.get("TARGET_CITY")
     state = os.environ.get("TARGET_STATE")
     business_type = os.environ.get("BUSINESS_TYPE", "SALE")
     price_max_env = os.environ.get("PRICE_MAX", "2000000")
 
     if not city or not state:
-        logger.error("CRITICAL: Variáveis de ambiente TARGET_CITY e TARGET_STATE são obrigatórias.")
-        sys.exit(1)  # Sai com erro
+        # Se for rodar localmente ou via CLI, use sys.argv (opcional, dependendo da sua estratégia)
+        if len(sys.argv) > 2:
+            city = sys.argv[1]
+            state = sys.argv[2]
+            logger.warning("Usando city/state do CLI (sys.argv) em vez de variáveis de ambiente.")
+        else:
+            logger.error("CRITICAL: TARGET_CITY e TARGET_STATE são obrigatórias (via ENV ou CLI).")
+            sys.exit(1)
 
     try:
         price_max = int(price_max_env)
@@ -363,26 +355,37 @@ def main():
             price_max=price_max
         )
 
-        run_timestamp = exec_metadata['execution_start_utc'].replace(":", "-")
+        # Prepara o caminho no GCS (Ex: SALE/Goiás/Goiânia/2025-11-20T18-20-00.000000)
+        run_timestamp = exec_metadata['execution_start_utc'].replace(":", "-").replace(".", "-")
         base_path = f"{business_type}/{state}/{city}/{run_timestamp}"
 
         # 3. Uploads
-        # Metadados
-        metadata_df = pd.DataFrame([exec_metadata])
-        upload_df_to_gcs(metadata_df, GCS_BUCKET_NAME, f"metadata/{base_path}_metadata.parquet")
+        logger.info(f"Iniciando upload para o bucket: {GCS_BUCKET_NAME}")
 
-        # Dados
+        # Metadados: Salva no caminho 'metadata/...'
+        metadata_df = pd.DataFrame([exec_metadata])
+        upload_df_to_gcs(
+            df=metadata_df,
+            bucket_name=GCS_BUCKET_NAME,  # <--- CORREÇÃO AQUI
+            destination_blob_name=f"metadata/{base_path}_metadata.parquet"
+        )
+
+        # Dados: Salva no caminho 'data/...'
         if data_df is not None and not data_df.empty:
-            upload_df_to_gcs(data_df, GCS_BUCKET_NAME, f"data/{base_path}_data.parquet")
+            upload_df_to_gcs(
+                df=data_df,
+                bucket_name=GCS_BUCKET_NAME,  # <--- CORREÇÃO AQUI
+                destination_blob_name=f"data/{base_path}_data.parquet"
+            )
         else:
-            logger.warning(f"Nenhum dado para salvar em {city}.")
+            logger.warning(f"Nenhum dado para salvar em {city}. Apenas metadados foram salvos.")
 
         logger.info("--- Job Finalizado com Sucesso ---")
-        sys.exit(0)  # Sucesso
+        sys.exit(0)
 
     except Exception as e:
         logger.critical(f"Erro não tratado na execução principal: {e}", exc_info=True)
-        sys.exit(1)  # Falha (Cloud Run pode tentar novamente se configurado)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
