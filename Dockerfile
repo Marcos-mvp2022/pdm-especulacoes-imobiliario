@@ -14,6 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY Scraping.Dataframe_populate.py .
+COPY Dataframe_populate.py .
 
-ENTRYPOINT ["python", "Scraping.Dataframe_populate.py"]
+ENTRYPOINT ["python", "Dataframe_populate.py"]

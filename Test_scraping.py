@@ -1,5 +1,5 @@
 import logging
-from Scraping.Dataframe_populate import run_pipeline
+from Dataframe_populate import run_pipeline
 
 # Configura o logging para ver o que está acontecendo
 logger = logging.getLogger("zap_pipeline_v4")
