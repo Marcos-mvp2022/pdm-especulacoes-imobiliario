@@ -374,7 +374,7 @@ def main():
         if data_df is not None and not data_df.empty:
             upload_df_to_gcs(
                 df=data_df,
-                bucket_name=GCS_BUCKET_NAME,  # <--- CORREÇÃO AQUI
+                bucket_name=GCS_BUCKET_NAME,
                 destination_blob_name=f"data/{base_path}_data.parquet"
             )
         else:
