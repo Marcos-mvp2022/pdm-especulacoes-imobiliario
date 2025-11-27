@@ -1,41 +1,57 @@
+# -*- coding: utf-8 -*-
+"""
+Zap Imóveis v4 scraper (faixas de preço, contrato v4 "params" como no navegador)
+Requisitos:
+    pip install cloudscraper pandas
+Opcional:
+    pip install browser-cookie3
+"""
+
 import time
+import logging
 import random
 import unicodedata
-import os
-import sys
-import datetime
-import logging
-import pandas as pd
-import cloudscraper
-
 from typing import List, Optional, Dict, Any
-from google.cloud import storage
 
-# ===================== Configuração de Logs =====================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-logger = logging.getLogger("zap_job_scraper")
+import pandas as pd
 
-# ===================== Constantes ===============================
+# ===================== Constantes =====================
+
 ORIGIN_PAGE = "https://www.zapimoveis.com.br/"
-API_URL = "https://glue-api.zapimoveis.com.br/v4/listings"
-DEVICE_ID = "c5a40c3c-d033-4a5d-b1e2-79b59e4fb68d"
-PORTAL = "ZAP"
-CATEGORY_PAGE = "RESULT"
-LISTING_TYPE = "USED"
+API_URL     = "https://glue-api.zapimoveis.com.br/v4/listings"
 
-# --- Constantes de Comportamento ---
+# Identidade / filtros padrão (ajuste conforme seu caso)
+DEVICE_ID       = "c5a40c3c-d033-4a5d-b1e2-79b59e4fb68d"
+PORTAL          = "ZAP"
+CATEGORY_PAGE   = "RESULT"
+BUSINESS        = "SALE"   # "RENTAL" para aluguel
+LISTING_TYPE    = "USED"
 
-SIZE = 30
-FROM_MAX = 300
+# Local (exemplo; você pode passar lat/lon ou deixar None)
+ADDRESS_CITY    = "Goiânia"
+ADDRESS_STATE   = "Goiás"       # exibido; AddressLocationId será sem acentos
+ADDRESS_LAT     = None          # "-23.555771"
+ADDRESS_LON     = None          # "-46.639557"
+ADDRESS_TYPE    = "city"
+
+# Paginação e varredura por faixa de preço
+SIZE            = 30
+FROM_MAX        = 300           # varre from = 0, 30, 60... < FROM_MAX
 PRICE_MIN_START = 1000
-PRICE_STEP = 49990
-REQUESTS_TIMEOUT = 30
+PRICE_STEP      = 49990
+PRICE_MAX_END   = 10000000
+
+# Arquivo
+CSV_PATH        = "raw_zap-anuncios-por-faixa.csv"
+
+# Comportamento de rede
+REQUESTS_TIMEOUT   = 30
 BASE_SLEEP_SECONDS = 0.9
-RANDOM_JITTER_MAX = 0.6
-RETRIES = 5
+RANDOM_JITTER_MAX  = 0.6
+RETRIES            = 5
+USE_BROWSER_COOKIES = False  # mude para True se precisar importar cookies do navegador
 
-USE_BROWSER_COOKIES = False
-
+# includeFields (contrato v4). Pode colar exatamente o mesmo que o navegador gerou.
 INCLUDE_FIELDS = (
     "expansion(search(result(listings(listing("
     "expansionType,contractType,listingsCount,propertyDevelopers,sourceId,displayAddressType,amenities,usableAreas,"
@@ -72,12 +88,22 @@ INCLUDE_FIELDS = (
     "bedrooms,bathrooms,parkingSpaces,pricingInfos))),totalCount))"
 )
 
+# ===================== Logging =====================
+
+logger = logging.getLogger("zap_pipeline_v4")
+if not logger.handlers:
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(h)
+logger.setLevel(logging.INFO)
+
 # ===================== Helpers =====================
 
 def _ascii_no_accents(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
 
 def build_address_location_id(state: str, city: str) -> str:
+    # no exemplo do navegador, ambos vêm sem acento e com espaços preservados
     st = _ascii_no_accents(state)
     ct = _ascii_no_accents(city)
     return f"BR>{st}>NULL>{ct}"
@@ -92,7 +118,7 @@ COMMON_HEADERS = {
     "User-Agent": UA_EDGE_141,
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8,en-US;q=0.7",
-    "Accept-Encoding": "gzip, deflate",
+    "Accept-Encoding": "gzip, deflate",  # <-- REMOVIDO o 'br'
     "Origin": "https://www.zapimoveis.com.br",
     "Referer": "https://www.zapimoveis.com.br/",
     "x-deviceid": DEVICE_ID,
@@ -100,11 +126,13 @@ COMMON_HEADERS = {
 }
 
 def make_scraper():
+    import cloudscraper
     s = cloudscraper.create_scraper()
     s.headers.update(COMMON_HEADERS)
     return s
 
 def bootstrap_cookies() -> Dict[str, str]:
+    # Abre a origem para o cloudscraper resolver CF e pegar cookies
     s = make_scraper()
     try:
         r = s.get(ORIGIN_PAGE, timeout=REQUESTS_TIMEOUT)
@@ -113,25 +141,49 @@ def bootstrap_cookies() -> Dict[str, str]:
         logger.warning(f"Falha ao abrir origem: {e}")
     cookies = s.cookies.get_dict()
     keys = ", ".join(cookies.keys()) if cookies else "(nenhum)"
-    logger.info(f"Cookies coletados via request inicial: {keys}")
+    logger.info(f"Cookies coletados: {keys}")
+    if "cf_clearance" not in cookies and "__cf_bm" not in cookies:
+        logger.warning("cf_clearance/__cf_bm NÃO encontrados — se houver 403/HTML, importe do navegador (USE_BROWSER_COOKIES=True).")
     return cookies
+
+def bootstrap_from_browser() -> Dict[str, str]:
+    try:
+        import browser_cookie3
+    except Exception:
+        logger.error("Instale browser-cookie3 para importar cookies.")
+        raise
+    merged = {}
+    try:
+        merged.update(browser_cookie3.chrome(domain_name="zapimoveis.com.br").get_dict())
+    except Exception as e:
+        logger.warning(f"Erro lendo cookies zapimoveis.com.br: {e}")
+    try:
+        merged.update(browser_cookie3.chrome(domain_name="glue-api.zapimoveis.com.br").get_dict())
+    except Exception as e:
+        logger.warning(f"Erro lendo cookies glue-api.zapimoveis.com.br: {e}")
+    logger.info("Cookies (browser) importados: " + (", ".join(merged.keys()) if merged else "(nenhum)"))
+    return merged
 
 def polite_sleep():
     time.sleep(BASE_SLEEP_SECONDS + random.uniform(0, RANDOM_JITTER_MAX))
 
 def looks_like_html(text: str) -> bool:
-    if not text: return False
+    if not text:
+        return False
     t = text.lstrip()
     return t.startswith("<") or t.lower().startswith("<!doctype")
 
 def extract_listings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    exp = (((payload or {}).get("expansion") or {}).get("search") or {}).get("result") or {}
+    # tenta caminhos conhecidos
+    exp = (((payload or {}).get("expansion") or {})
+                          .get("search") or {}
+                          .get("result") or {})
     if isinstance(exp, dict) and "listings" in exp:
         return exp.get("listings") or []
     srch = ((payload or {}).get("search") or {}).get("result") or {}
     return srch.get("listings") or []
 
-# ===================== Core: chamada da API =====================
+# ===================== Core: chamada da API v4 (params) =====================
 
 def call_api(scraper, params: Dict[str, str], tries=RETRIES):
     last = None
@@ -139,254 +191,145 @@ def call_api(scraper, params: Dict[str, str], tries=RETRIES):
         try:
             r = scraper.get(API_URL, params=params, timeout=REQUESTS_TIMEOUT)
             ct = (r.headers.get("Content-Type") or "").lower()
-
             if r.status_code == 200 and "application/json" in ct:
+                # proteção extra contra corpo HTML
                 if looks_like_html(r.text):
                     raise ValueError("Corpo HTML com status 200")
                 return r
-
-            # Lógica de Backoff para erros 429 ou 5xx
+            # 429/5xx -> backoff
             if r.status_code == 429 or 500 <= r.status_code < 600:
                 wait = 1.2 * (2 ** (i - 1)) + random.uniform(0, 0.8)
                 logger.warning(f"{r.status_code} na API (tentativa {i}/{tries}). Backoff {wait:.1f}s…")
                 time.sleep(wait)
                 last = r
                 continue
-
-            # Lógica para bloqueios
+            # 403/HTML: tenta rebootstrap leve
             if r.status_code in (401, 403) or ("text/html" in ct) or looks_like_html(r.text):
                 logger.warning(f"Bloqueio/HTML (status={r.status_code}, ct={ct}). Tentativa {i}/{tries}.")
                 time.sleep(0.8 + random.uniform(0, 0.6))
                 last = r
                 continue
+            # demias códigos não-OK
             last = r
         except Exception as e:
             logger.warning(f"Exceção na chamada (tentativa {i}/{tries}): {e}")
             time.sleep(1.0 + random.uniform(0, 0.6))
     return last
 
-# ===================== Upload para GCS =====================
+# ===================== Pipeline por faixas =====================
 
-def upload_df_to_gcs(df: pd.DataFrame, bucket_name: str, destination_blob_name: str, format: str = 'parquet'):
-    temp_filename = os.path.join("/tmp", destination_blob_name.split('/')[-1])
-    try:
-        # Garante que o diretório pai exista (localmente, se necessário, mas no GCS é blob)
-        if format == 'parquet':
-            df.to_parquet(temp_filename, index=False, engine='pyarrow')
-        elif format == 'csv':
-            df.to_csv(temp_filename, index=False, encoding='utf-8')
+def run_pipeline() -> Optional[pd.DataFrame]:
+    # 1) Cookies
+    cookies = bootstrap_from_browser() if USE_BROWSER_COOKIES else bootstrap_cookies()
 
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(destination_blob_name)
-        blob.upload_from_filename(temp_filename)
-        logger.info(f"Arquivo salvo no GCS: gs://{bucket_name}/{destination_blob_name}")
-    except Exception as e:
-        logger.error(f"Falha ao fazer upload para o GCS: {e}")
-        raise
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
-
-# ===================== Pipeline Lógico =====================
-
-def run_pipeline(city: str, state: str, business_type: str, price_max: int) -> (Optional[pd.DataFrame], Dict[str, Any]):
-    start_time = time.time()
-    start_time_utc = datetime.datetime.utcnow()
-    logger.info(f"Iniciando pipeline para {city}/{state} (Business: {business_type}, PriceMax: {price_max})")
-
-    # 1) Cookies (Apenas Bootstrap simples em ambiente headless)
-    cookies = bootstrap_cookies()
+    # 2) Scraper da API com cookies injetados
     scraper_api = make_scraper()
     if cookies:
         scraper_api.cookies.update(cookies)
 
-    # 2) Params
-    address_loc_id = build_address_location_id(state, city)
+    # 3) Base estática de params (idêntica ao navegador)
+    address_loc_id = build_address_location_id(ADDRESS_STATE, ADDRESS_CITY)
+
     base_params = {
         "user": DEVICE_ID,
         "portal": PORTAL,
         "categoryPage": CATEGORY_PAGE,
-        "business": business_type,
+        "business": BUSINESS,
         "listingType": LISTING_TYPE,
         "__zt": "mtc:deduplication2023",
-        "addressCity": city,
+        "addressCity": ADDRESS_CITY,
         "addressLocationId": address_loc_id,
-        "addressState": state,
-        "addressType": "city",
+        "addressState": ADDRESS_STATE,
+        "addressType": ADDRESS_TYPE,
         "size": str(SIZE),
         "images": "webp",
-        "includeFields": INCLUDE_FIELDS,
+        "includeFields": INCLUDE_FIELDS,  # pode remover se preferir usar o padrão do servidor
     }
+    if ADDRESS_LAT and ADDRESS_LON:
+        base_params["addressPointLat"] = str(ADDRESS_LAT)
+        base_params["addressPointLon"] = str(ADDRESS_LON)
 
-    rows = []
-    status = "SUCCESS"
+    rows: List[Dict[str, Any]] = []
 
-    # 3) Varredura
-    try:
-        for pmin in range(PRICE_MIN_START, price_max, PRICE_STEP):
-            pmax = min(pmin + PRICE_STEP, price_max)
-            logger.info(f"🔎 Faixa R$ {pmin} .. R$ {pmax}")
+    # 4) Varredura por FAIXAS (priceMin/priceMax)
+    for pmin in range(PRICE_MIN_START, PRICE_MAX_END, PRICE_STEP):
+        pmax = min(pmin + PRICE_STEP, PRICE_MAX_END)
+        logger.info(f"🔎 Faixa R$ {pmin} .. R$ {pmax}")
 
-            for from_v in range(0, FROM_MAX, SIZE):
-                page = (from_v // SIZE) + 1
-                params = dict(base_params)
-                params.update({
-                    "page": str(page),
-                    "from": str(from_v),
-                    "priceMin": str(pmin),
-                    "priceMax": str(pmax),
-                })
+        # 4a) paginação por offset (from) até esgotar ou bater limite
+        for from_v in range(0, FROM_MAX, SIZE):
+            page = (from_v // SIZE) + 1
+            params = dict(base_params)  # shallow copy
+            params.update({
+                "page": str(page),
+                "from": str(from_v),
+                "priceMin": str(pmin),
+                "priceMax": str(pmax),
+            })
 
-                r = call_api(scraper_api, params)
+            r = call_api(scraper_api, params)
+            if r is None:
+                logger.error(f"❌ Sem resposta na faixa {pmin}-{pmax} from={from_v}")
+                break
 
-                if r is None: break
-                ct = (r.headers.get("Content-Type") or "").lower()
-                if r.status_code == 404: break
-                if r.status_code != 200 or "application/json" not in ct: break
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if r.status_code == 404:
+                logger.info("⚠️ 404 (fim dos dados nesta faixa).")
+                break
 
-                try:
-                    data = r.json()
-                except Exception:
-                    continue
+            if r.status_code != 200 or "application/json" not in ct:
+                snippet = (r.text or "")[:400].replace("\n", " ")
+                logger.error(f"❌ Resposta inesperada: status={r.status_code} ct={ct} corpo[400]={snippet}")
+                # em bloqueio/HTML, pare a faixa para não martelar
+                break
 
-                listings = extract_listings(data)
-                if not listings: break
+            try:
+                data = r.json()
+            except Exception as e:
+                snippet = (r.text or "")[:200].replace("\n", " ")
+                logger.error(f"❌ JSON inválido (from={from_v}): {e} | corpo[200]={snippet}")
+                # tenta próxima página/offset com pequena pausa
+                time.sleep(random.uniform(1.0, 2.2))
+                continue
 
-                for it in listings:
-                    lin = it.get("listing") or {}
-                    lin["account"] = it.get("account")
-                    lin["medias"] = it.get("medias")
-                    lin["accountLink"] = it.get("accountLink")
-                    lin["link"] = it.get("link")
-                    rows.append(lin)
+            listings = extract_listings(data)
+            if not listings:
+                logger.info("ℹ️ Nenhum listing retornado; encerrando paginação desta faixa.")
+                break
 
-                logger.info(f"✔️ page={page} from={from_v} registros={len(listings)}")
-                polite_sleep()
-                if len(listings) < SIZE: break  # Fim da paginação
+            # Achata cada item numa linha (preservando a estrutura principal)
+            for it in listings:
+                lin = it.get("listing") or {}
+                lin["account"] = it.get("account")
+                lin["medias"] = it.get("medias")
+                lin["accountLink"] = it.get("accountLink")
+                lin["link"] = it.get("link")
+                rows.append(lin)
 
-            time.sleep(random.uniform(1.2, 2.5))
+            logger.info(f"✔️ page={page} from={from_v} registros={len(listings)}")
+            polite_sleep()
 
-    except Exception as e:
-        logger.error(f"Erro fatal durante scraping: {e}")
-        status = f"FAILURE: {str(e)}"
+            # heurística de última página (lista menor que SIZE)
+            if len(listings) < SIZE:
+                logger.info("ℹ️ Página final detectada (menos que SIZE).")
+                break
 
-    # 4) Consolidação
-    df = None
-    total_records = 0
-    size_in_bytes = 0
+        # pausa entre faixas
+        time.sleep(random.uniform(1.2, 2.5))
 
-    if rows:
-        try:
-            df = pd.json_normalize(rows, sep=".")
-            total_records = len(df)
-            size_in_bytes = int(df.memory_usage(deep=True).sum())
-            logger.info(f"✅ Coleta finalizada | shape={df.shape} | bytes={size_in_bytes}")
-        except Exception as e:
-            logger.error(f"Erro ao normalizar dados: {e}")
-            status = f"FAILURE_NORMALIZE: {str(e)}"
-    else:
-        if status == "SUCCESS":
-            status = "NO_DATA"
+    if not rows:
+        logger.warning("⚠️ Nenhum dado coletado.")
+        return None
 
-    end_time_utc = datetime.datetime.utcnow()
+    # Normalização leve (json_normalize já lida com nested dicts)
+    df = pd.json_normalize(rows, sep=".")
+    df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+    logger.info(f"✅ Salvo em {CSV_PATH} | shape={df.shape}")
+    return df
 
-    metadata = {
-        "execution_start_utc": start_time_utc.isoformat(),
-        "execution_end_utc": end_time_utc.isoformat(),
-        "total_duration_seconds": time.time() - start_time,
-        "status": status,
-        "city": city,
-        "state": state,
-        "business_type": business_type,
-        "total_records": total_records,
-        "data_size_bytes": size_in_bytes,
-        "parameters": {
-            "price_min": PRICE_MIN_START,
-            "price_max": price_max,
-            "price_step": PRICE_STEP
-        }
-    }
-
-    return df, metadata
-
-
-# ===================== Main (Cloud Run Job Entrypoint) =====================
-
-GCS_BUCKET_NAME = "pdm-especulacoes-imobiliario"
-
-
-def main():
-    """
-    Função principal executada pelo Container.
-    Lê parâmetros de Variáveis de Ambiente (injetadas pelo Cloud Scheduler/Manual Job).
-    """
-    logger.info("--- Iniciando Job Cloud Run ---")
-
-    # 1. Leitura de Parâmetros
-    # (Recomendado usar Variáveis de Ambiente para os parâmetros de execução)
-    city = os.environ.get("TARGET_CITY")
-    state = os.environ.get("TARGET_STATE")
-    business_type = os.environ.get("BUSINESS_TYPE", "SALE")
-    price_max_env = os.environ.get("PRICE_MAX", "2000000")
-
-    if not city or not state:
-        # Se for rodar localmente ou via CLI, use sys.argv (opcional, dependendo da sua estratégia)
-        if len(sys.argv) > 2:
-            city = sys.argv[1]
-            state = sys.argv[2]
-            logger.warning("Usando city/state do CLI (sys.argv) em vez de variáveis de ambiente.")
-        else:
-            logger.error("CRITICAL: TARGET_CITY e TARGET_STATE são obrigatórias (via ENV ou CLI).")
-            sys.exit(1)
-
-    try:
-        price_max = int(price_max_env)
-    except ValueError:
-        logger.error(f"CRITICAL: PRICE_MAX inválido: {price_max_env}")
-        sys.exit(1)
-
-    # 2. Execução
-    try:
-        (data_df, exec_metadata) = run_pipeline(
-            city=city,
-            state=state,
-            business_type=business_type,
-            price_max=price_max
-        )
-
-        # Prepara o caminho no GCS (Ex: SALE/Goiás/Goiânia/2025-11-20T18-20-00.000000)
-        run_timestamp = exec_metadata['execution_start_utc'].replace(":", "-").replace(".", "-")
-        base_path = f"{business_type}/{state}/{city}/{run_timestamp}"
-
-        # 3. Uploads
-        logger.info(f"Iniciando upload para o bucket: {GCS_BUCKET_NAME}")
-
-        # Metadados: Salva no caminho 'metadata/...'
-        metadata_df = pd.DataFrame([exec_metadata])
-        upload_df_to_gcs(
-            df=metadata_df,
-            bucket_name=GCS_BUCKET_NAME,  # <--- CORREÇÃO AQUI
-            destination_blob_name=f"metadata/{base_path}_metadata.parquet"
-        )
-
-        # Dados: Salva no caminho 'data/...'
-        if data_df is not None and not data_df.empty:
-            upload_df_to_gcs(
-                df=data_df,
-                bucket_name=GCS_BUCKET_NAME,
-                destination_blob_name=f"data/{base_path}_data.parquet"
-            )
-        else:
-            logger.warning(f"Nenhum dado para salvar em {city}. Apenas metadados foram salvos.")
-
-        logger.info("--- Job Finalizado com Sucesso ---")
-        sys.exit(0)
-
-    except Exception as e:
-        logger.critical(f"Erro não tratado na execução principal: {e}", exc_info=True)
-        sys.exit(1)
-
+# ===================== Execução =====================
 
 if __name__ == "__main__":
-    main()
+    df = run_pipeline()
+    if df is not None:
+        print(df.head(3))
