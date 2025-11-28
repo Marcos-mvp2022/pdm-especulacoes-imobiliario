@@ -2,38 +2,51 @@ name: GCP
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main  # ou 'master', dependendo da sua branch principal
+
+env:
+  PROJECT_ID: sobreviva
+  REGION: us-central1
+  REPO_NAME: pdm-especulacoes-imobiliarias
+  IMAGE_NAME: populator
+  JOB_NAME: job-populate
 
 jobs:
   deploy:
-    name: Setup Gcloud Account
     runs-on: ubuntu-latest
-    environment: gcp_prod
-    env:
-      IMAGE_NAME: gcr.io/${{ secrets.PROJECT_ID }}/site:latest
+
     steps:
-      # Git checkout
-      - name: Checkout
-        uses: actions/checkout@v2
+      # 1. Baixa o código do repositório
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # Login to GCP
-      - uses: google-github-actions/setup-gcloud@v0.2.0
+      # 2. Autentica no Google Cloud usando a chave que você salvou
+      - name: Google Auth
+        id: auth
+        uses: google-github-actions/auth@v1
         with:
-          service_account_key: ${{ secrets.CREDENTIALS }}
-          project_id: ${{ secrets.PROJECT_ID }}
+          credentials_json: '${{ secrets.CREDENTIALS}}'
 
-      # gcloud configure docker
-      - name: Configure Docker
-        run: gcloud auth configure-docker --quiet
+      # 3. Configura o CLI do gcloud
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
 
-      # build image
-      - name: Build Docker image
-        run: docker build -t $IMAGE_NAME .
+      # 4. Build e Push da Imagem
+      # ATENÇÃO: Estou assumindo que sua pasta se chama 'task'.
+      # Se você usar cloudbuild.yaml, troque o comando abaixo.
+      - name: Build and Push Container
+        run: |
+          gcloud builds submit --tag ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} task/
+          
+          # Cria também uma tag 'latest' para facilitar a visualização
+          gcloud container images add-tag \
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest --quiet
 
-      # push image to registry
-      - name: Push Docker image
-        run: docker push $IMAGE_NAME
-
-      # deploy image
-      - name: Deploy Docker image
-        run: gcloud run deploy site --image $IMAGE_NAME --region us-central1 --memory 128Mi --min-instances 0 --max-instances 1 --platform managed --port 80 --allow-unauthenticated
+      # 5. Atualiza o Cloud Run Job com a nova imagem
+      - name: Update Cloud Run Job
+        run: |
+          gcloud run jobs update ${{ env.JOB_NAME }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }}
