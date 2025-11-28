@@ -9,7 +9,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     
-    # Define o ambiente para carregar os secrets corretos
+    # Mantendo a configuração dos secrets
     environment: gcp-prod 
 
     env:
@@ -32,11 +32,12 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      # --- A CORREÇÃO ESTÁ NA LINHA ABAIXO ---
-      # Adicionei um espaço e "task/" no final do comando
+      # --- CORREÇÃO AQUI ---
+      # Mudamos de "task/" para "." (ponto)
+      # O ponto indica que o Dockerfile está na raiz do repositório
       - name: Build and Push Container
         run: |
-          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} task/
+          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
 
       - name: Update Cloud Run Job
         run: |
