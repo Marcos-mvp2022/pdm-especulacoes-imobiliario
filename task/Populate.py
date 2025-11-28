@@ -30,8 +30,8 @@ BUSINESS        = "SALE"   # "RENTAL" para aluguel
 LISTING_TYPE    = "USED"
 
 # Local (exemplo; você pode passar lat/lon ou deixar None)
-ADDRESS_CITY    = "Goiânia"
-ADDRESS_STATE   = "Goiás"       # exibido; AddressLocationId será sem acentos
+ADDRESS_CITY    = "Goiania"
+ADDRESS_STATE   = "Goias"       # exibido; AddressLocationId será sem acentos
 ADDRESS_LAT     = None          # "-23.555771"
 ADDRESS_LON     = None          # "-46.639557"
 ADDRESS_TYPE    = "city"
