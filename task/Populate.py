@@ -325,7 +325,7 @@ def run_pipeline() -> Optional[pd.DataFrame]:
 
     # Normalização leve (json_normalize já lida com nested dicts)
     df = pd.json_normalize(rows, sep=".")
-
+    df['usableAreas'] = pd.to_numeric(df['usableAreas'], errors='coerce')
     df.to_parquet(f"gs://{bucket_name}/cubes/{time.time()}_datablock.parquet")
 
     logger.info(f"✅ Salvo em {OUT_PATH} | shape={df.shape}")
