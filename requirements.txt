@@ -8,3 +8,5 @@ scikit-learn
 google-cloud-storage
 pydantic
 numpy
+cloudscraper
+pyarrow
