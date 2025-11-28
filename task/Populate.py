@@ -323,7 +323,7 @@ def run_pipeline() -> Optional[pd.DataFrame]:
 
     # Normalização leve (json_normalize já lida com nested dicts)
     df = pd.json_normalize(rows, sep=".")
-    df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+    df.to_csv(f"gs://pdm-especulacoes-imobiliario/gate/{time.time()}dataframe.csv", index=False, encoding='utf-8')
     logger.info(f"✅ Salvo em {CSV_PATH} | shape={df.shape}")
     return df
 
