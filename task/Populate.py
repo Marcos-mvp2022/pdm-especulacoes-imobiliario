@@ -17,8 +17,6 @@ import pandas as pd
 
 # ===================== Constantes =====================
 
-bucket_name = 'pdm-especulacoes-imobiliario'
-
 ORIGIN_PAGE = "https://www.zapimoveis.com.br/"
 API_URL     = "https://glue-api.zapimoveis.com.br/v4/listings"
 
@@ -30,21 +28,21 @@ BUSINESS        = "SALE"   # "RENTAL" para aluguel
 LISTING_TYPE    = "USED"
 
 # Local (exemplo; você pode passar lat/lon ou deixar None)
-ADDRESS_CITY    = "Goiania"
-ADDRESS_STATE   = "Goias"       # exibido; AddressLocationId será sem acentos
+ADDRESS_CITY    = "Goiânia"
+ADDRESS_STATE   = "Goiás"       # exibido; AddressLocationId será sem acentos
 ADDRESS_LAT     = None          # "-23.555771"
 ADDRESS_LON     = None          # "-46.639557"
 ADDRESS_TYPE    = "city"
 
 # Paginação e varredura por faixa de preço
-SIZE            = 50
-FROM_MAX        = 100      # varre from = 0, 30, 60... < FROM_MAX
-PRICE_MIN_START = 1
-PRICE_MAX_END   = 10000
-PRICE_STEP      = int(PRICE_MAX_END / 25)
+SIZE            = 30
+FROM_MAX        = 300           # varre from = 0, 30, 60... < FROM_MAX
+PRICE_MIN_START = 1000
+PRICE_STEP      = 49990
+PRICE_MAX_END   = 10000000
 
 # Arquivo
-OUT_PATH = f"{time.time()}_rawdataset.parquet"
+CSV_PATH        = "raw_zap-anuncios-por-faixa.csv"
 
 # Comportamento de rede
 REQUESTS_TIMEOUT   = 30
@@ -325,11 +323,8 @@ def run_pipeline() -> Optional[pd.DataFrame]:
 
     # Normalização leve (json_normalize já lida com nested dicts)
     df = pd.json_normalize(rows, sep=".")
-
-    with open("/mnt/bucket_montado/dados.csv", "w") as f:
-        f.write(df)
-
-    logger.info(f"✅ Salvo em {OUT_PATH} | shape={df.shape}")
+    df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+    logger.info(f"✅ Salvo em {CSV_PATH} | shape={df.shape}")
     return df
 
 # ===================== Execução =====================
