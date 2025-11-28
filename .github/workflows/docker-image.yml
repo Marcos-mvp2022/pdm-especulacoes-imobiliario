@@ -16,38 +16,44 @@ jobs:
       REPO_NAME: pdm-especulacoes-imobiliarias
       IMAGE_NAME: populator
       JOB_NAME: job-populate
+      # Montamos a URL da imagem aqui para ficar mais fácil de ler abaixo
+      IMAGE_URL: us-central1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/pdm-especulacoes-imobiliarias/populator:${{ github.sha }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --- PASSO DE DEBUG (NOVO) ---
-      # Isso vai listar os arquivos no log para termos certeza que o Dockerfile está lá
-      - name: Debug - List files
-        run: |
-          echo "Listando arquivos na raiz:"
-          ls -la
-
+      # 1. Autenticação no Google Cloud
       - name: Google Auth
         id: auth
         uses: google-github-actions/auth@v1
         with:
           credentials_json: '${{ secrets.CREDENTIALS }}'
 
+      # 2. Configura o gcloud CLI
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      # --- CORREÇÃO DE BUILD ---
-      # Adicionamos a flag --file Dockerfile explicitamente
-      - name: Build and Push Container
+      # 3. Configura o Docker para autenticar no Artifact Registry do Google
+      - name: Configure Docker Auth
         run: |
-          gcloud builds submit \
-            --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --file Dockerfile \
-            .
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
+      # 4. Build da Imagem (Usando Docker nativo)
+      # O ponto '.' no final indica o contexto (raiz)
+      # O '-f Dockerfile' garante que ele pegue o arquivo certo
+      - name: Build Container
+        run: |
+          docker build -t ${{ env.IMAGE_URL }} -f Dockerfile .
+
+      # 5. Envia a imagem para o Google Artifact Registry
+      - name: Push Container
+        run: |
+          docker push ${{ env.IMAGE_URL }}
+
+      # 6. Atualiza o Job no Cloud Run
       - name: Update Cloud Run Job
         run: |
           gcloud run jobs update ${{ env.JOB_NAME }} \
-            --image us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image ${{ env.IMAGE_URL }} \
             --region ${{ env.REGION }}
