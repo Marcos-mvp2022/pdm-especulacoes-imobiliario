@@ -8,12 +8,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
-    # Mantendo a configuração dos secrets
-    environment: gcp-prod 
+    environment: gcp-prod
 
     env:
-      PROJECT_ID: ${{ secrets.PROJECT_ID }} 
+      PROJECT_ID: ${{ secrets.PROJECT_ID }}
       REGION: us-central1
       REPO_NAME: pdm-especulacoes-imobiliarias
       IMAGE_NAME: populator
@@ -22,6 +20,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # --- PASSO DE DEBUG (NOVO) ---
+      # Isso vai listar os arquivos no log para termos certeza que o Dockerfile está lá
+      - name: Debug - List files
+        run: |
+          echo "Listando arquivos na raiz:"
+          ls -la
 
       - name: Google Auth
         id: auth
@@ -32,12 +37,14 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      # --- CORREÇÃO AQUI ---
-      # Mudamos de "task/" para "." (ponto)
-      # O ponto indica que o Dockerfile está na raiz do repositório
+      # --- CORREÇÃO DE BUILD ---
+      # Adicionamos a flag --file Dockerfile explicitamente
       - name: Build and Push Container
         run: |
-          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          gcloud builds submit \
+            --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --file Dockerfile \
+            .
 
       - name: Update Cloud Run Job
         run: |
