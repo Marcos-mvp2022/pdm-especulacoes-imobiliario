@@ -1,39 +1,59 @@
-name: GCP
+name: Deploy Cloud Run Job
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   deploy:
-    name: Setup Gcloud Account
     runs-on: ubuntu-latest
-    environment: gcp_prod
+    environment: gcp-prod
+
     env:
-      IMAGE_NAME: gcr.io/${{ secrets.PROJECT_ID }}/site:latest
+      PROJECT_ID: ${{ secrets.PROJECT_ID }}
+      REGION: us-central1
+      REPO_NAME: pdm-especulacoes-imobiliarias
+      IMAGE_NAME: populator
+      JOB_NAME: job-populate
+      # Montamos a URL da imagem aqui para ficar mais fácil de ler abaixo
+      IMAGE_URL: us-central1-docker.pkg.dev/${{ secrets.PROJECT_ID }}/pdm-especulacoes-imobiliarias/populator:${{ github.sha }}
+
     steps:
-      # Git checkout
-      - name: Checkout
-        uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # Login to GCP
-      - uses: google-github-actions/setup-gcloud@v0.2.0
+      # 1. Autenticação no Google Cloud
+      - name: Google Auth
+        id: auth
+        uses: google-github-actions/auth@v1
         with:
-          service_account_key: ${{ secrets.CREDENTIALS }}
-          project_id: ${{ secrets.PROJECT_ID }}
+          credentials_json: '${{ secrets.CREDENTIALS }}'
 
-      # gcloud configure docker
-      - name: Configure Docker
-        run: gcloud auth configure-docker --quiet
+      # 2. Configura o gcloud CLI
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
 
-      # build image
-      - name: Build Docker image
-        run: docker build -t $IMAGE_NAME .
+      # 3. Configura o Docker para autenticar no Artifact Registry do Google
+      - name: Configure Docker Auth
+        run: |
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      # push image to registry
-      - name: Push Docker image
-        run: docker push $IMAGE_NAME
+      # 4. Build da Imagem (Usando Docker nativo)
+      # O ponto '.' no final indica o contexto (raiz)
+      # O '-f Dockerfile' garante que ele pegue o arquivo certo
+      - name: Build Container
+        run: |
+          docker build -t ${{ env.IMAGE_URL }} -f Dockerfile .
 
-      # deploy image
-      - name: Deploy Docker image
-        run: gcloud run deploy site --image $IMAGE_NAME --region us-central1 --memory 128Mi --min-instances 0 --max-instances 1 --platform managed --port 80 --allow-unauthenticated
+      # 5. Envia a imagem para o Google Artifact Registry
+      - name: Push Container
+        run: |
+          docker push ${{ env.IMAGE_URL }}
+
+      # 6. Atualiza o Job no Cloud Run
+      - name: Update Cloud Run Job
+        run: |
+          gcloud run jobs update ${{ env.JOB_NAME }} \
+            --image ${{ env.IMAGE_URL }} \
+            --region ${{ env.REGION }}
