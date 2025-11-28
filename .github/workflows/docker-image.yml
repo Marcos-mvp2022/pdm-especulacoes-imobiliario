@@ -9,13 +9,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     
-    # --- A CORREÇÃO PRINCIPAL ESTÁ AQUI ---
-    # Isso diz ao GitHub para carregar os secrets do ambiente 'gcp-prod'
+    # Define o ambiente para carregar os secrets corretos
     environment: gcp-prod 
-    # --------------------------------------
 
     env:
-      # Repare que agora puxamos dos secrets, conforme seu print
       PROJECT_ID: ${{ secrets.PROJECT_ID }} 
       REGION: us-central1
       REPO_NAME: pdm-especulacoes-imobiliarias
@@ -26,7 +23,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Autenticação usando o secret CREDENTIALS do seu print
       - name: Google Auth
         id: auth
         uses: google-github-actions/auth@v1
@@ -36,12 +32,12 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      # Build e Push
-      # IMPORTANTE: Se o seu Dockerfile está na pasta 'task', mantenha 'task/' no final
+      # --- A CORREÇÃO ESTÁ NA LINHA ABAIXO ---
+      # Adicionei um espaço e "task/" no final do comando
       - name: Build and Push Container
         run: |
-          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-      # Update do Job
+          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} task/
+
       - name: Update Cloud Run Job
         run: |
           gcloud run jobs update ${{ env.JOB_NAME }} \
