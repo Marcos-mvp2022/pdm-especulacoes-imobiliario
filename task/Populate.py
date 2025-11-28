@@ -36,10 +36,10 @@ ADDRESS_TYPE    = "city"
 
 # Paginação e varredura por faixa de preço
 SIZE            = 30
-FROM_MAX        = 300           # varre from = 0, 30, 60... < FROM_MAX
-PRICE_MIN_START = 1000
-PRICE_STEP      = 49990
-PRICE_MAX_END   = 10000000
+FROM_MAX        = 90          # varre from = 0, 30, 60... < FROM_MAX
+PRICE_MIN_START = 100
+PRICE_MAX_END   = 10000
+PRICE_STEP      = int(PRICE_MAX_END / 10)
 
 # Arquivo
 CSV_PATH        = "raw_zap-anuncios-por-faixa.csv"
