@@ -1,52 +1,50 @@
-name: GCP
+name: Deploy Cloud Run Job
 
 on:
   push:
     branches:
-      - main  # ou 'master', dependendo da sua branch principal
-
-env:
-  PROJECT_ID: sobreviva
-  REGION: us-central1
-  REPO_NAME: pdm-especulacoes-imobiliarias
-  IMAGE_NAME: populator
-  JOB_NAME: job-populate
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    
+    # --- A CORREÇÃO PRINCIPAL ESTÁ AQUI ---
+    # Isso diz ao GitHub para carregar os secrets do ambiente 'gcp-prod'
+    environment: gcp-prod 
+    # --------------------------------------
+
+    env:
+      # Repare que agora puxamos dos secrets, conforme seu print
+      PROJECT_ID: ${{ secrets.PROJECT_ID }} 
+      REGION: us-central1
+      REPO_NAME: pdm-especulacoes-imobiliarias
+      IMAGE_NAME: populator
+      JOB_NAME: job-populate
 
     steps:
-      # 1. Baixa o código do repositório
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Autentica no Google Cloud usando a chave que você salvou
+      # Autenticação usando o secret CREDENTIALS do seu print
       - name: Google Auth
         id: auth
         uses: google-github-actions/auth@v1
         with:
-          credentials_json: '${{ secrets.CREDENTIALS}}'
+          credentials_json: '${{ secrets.CREDENTIALS }}'
 
-      # 3. Configura o CLI do gcloud
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
 
-      # 4. Build e Push da Imagem
-      # ATENÇÃO: Estou assumindo que sua pasta se chama 'task'.
-      # Se você usar cloudbuild.yaml, troque o comando abaixo.
+      # Build e Push
+      # IMPORTANTE: Se o seu Dockerfile está na pasta 'task', mantenha 'task/' no final
       - name: Build and Push Container
         run: |
-          gcloud builds submit --tag ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} task/
-          
-          # Cria também uma tag 'latest' para facilitar a visualização
-          gcloud container images add-tag \
-            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest --quiet
+          gcloud builds submit --tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} task/
 
-      # 5. Atualiza o Cloud Run Job com a nova imagem
+      # Update do Job
       - name: Update Cloud Run Job
         run: |
           gcloud run jobs update ${{ env.JOB_NAME }} \
-            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --image us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }}
